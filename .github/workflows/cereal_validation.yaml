@@ -1,12 +1,6 @@
 name: cereal validation
 
 on:
-  push:
-    branches:
-      - master
-  pull_request:
-    paths:
-      - 'cereal/**'
   workflow_dispatch:
   workflow_call:
     inputs:

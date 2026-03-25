@@ -1,16 +1,5 @@
 name: "ui preview"
 on:
-  push:
-    branches:
-      - master
-  pull_request_target:
-    types: [assigned, opened, synchronize, reopened, edited]
-    branches:
-      - 'master'
-    paths:
-      - 'selfdrive/assets/**'
-      - 'selfdrive/ui/**'
-      - 'system/ui/**'
   workflow_dispatch:
 
 env:
