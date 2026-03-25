@@ -7,13 +7,6 @@ env:
   LFS_PUSH_URL: 'ssh://git@gitlab.com/sunnypilot/public/sunnypilot-new-lfs.git'
 
 on:
-  push:
-    branches:
-      - master
-  pull_request_target:
-    types: [ labeled ]
-    branches:
-      - 'master'
   workflow_dispatch:
     inputs:
       source_branch:
