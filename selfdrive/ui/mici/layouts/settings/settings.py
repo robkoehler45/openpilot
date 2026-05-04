@@ -25,7 +25,7 @@ class SettingsLayout(NavScroller):
     toggles_btn.set_click_callback(lambda: gui_app.push_widget(toggles_panel))
     
     ictoggles_panel = ICTogglesLayoutMici()
-    ictoggles_btn = SettingsBigButton("ictoggles", "", "icons_mici/settings.png")
+    ictoggles_btn = SettingsBigButton("ictoggles", "", gui_app.texture("icons_mici/settings.png", 64, 64))
     ictoggles_btn.set_click_callback(lambda: gui_app.push_widget(ictoggles_panel))
     
     network_panel = NetworkLayoutMici()
