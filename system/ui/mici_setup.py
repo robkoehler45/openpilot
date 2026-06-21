@@ -523,6 +523,7 @@ class Setup(Widget):
       req = urllib.request.Request(self.download_url, headers=headers)
 
       with open(tmpfile, 'wb') as f, urllib.request.urlopen(req, timeout=30) as response:
+        content_type = response.headers.get('content-type', '')
         total_size = int(response.headers.get('content-length', 0))
         downloaded = 0
         block_size = 8192
@@ -544,7 +545,10 @@ class Setup(Widget):
         is_elf = header == b'\x7fELF'
 
       if not is_elf:
-        self._download_failed_reason = "No custom software found at this URL: " + self.download_url.replace("https://", "", 1)
+        if content_type.startswith('text/') or content_type.startswith('application/json'):
+          self._download_failed_reason = "Downloaded content is not an ELF binary; got Content-Type=" + content_type
+        else:
+          self._download_failed_reason = "No custom software found at this URL: " + self.download_url.replace("https://", "", 1)
         return
 
       # NOTE: currently unused, for future logging
@@ -563,8 +567,12 @@ class Setup(Widget):
     except urllib.error.HTTPError as e:
       if e.code == 409:
         self._download_failed_reason = "Incompatible sunnypilot version."
-    except Exception:
-      self._download_failed_reason = "Invalid URL: " + self.download_url.replace("https://", "", 1)
+      else:
+        self._download_failed_reason = f"HTTP error {e.code}: {e.reason}"
+    except urllib.error.URLError as e:
+      self._download_failed_reason = f"Network error: {e.reason}"
+    except Exception as e:
+      self._download_failed_reason = "Invalid URL or download failed: " + str(e)
 
 
 def main():
