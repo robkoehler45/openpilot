@@ -341,6 +341,12 @@ class Setup(Widget):
 
     self.state = SetupState.DOWNLOADING
 
+    # Quick hotfix: allow disabling custom installer downloads via environment
+    # variable to avoid device crashes while we investigate further.
+    if os.environ.get("AGNOS_DISABLE_CUSTOM_INSTALLER") == "1":
+      self.download_failed(self.download_url, "Custom installer disabled (hotfix).")
+      return
+
     self.download_thread = threading.Thread(target=self._download_thread, daemon=True)
     self.download_thread.start()
 

@@ -504,6 +504,13 @@ class Setup(Widget):
     self.download_url = (urlparse(f"https://{url}") if not parsed.netloc else parsed).geturl()
     self.download_progress = 0
 
+    # Quick hotfix: allow disabling custom installer downloads via environment
+    # variable to avoid device crashes while we investigate further.
+    if os.environ.get("AGNOS_DISABLE_CUSTOM_INSTALLER") == "1":
+      self._download_failed_reason = "Custom installer disabled (hotfix)."
+      gui_app.push_widget(self._download_failed_page)
+      return
+
     def start_download():
       self.download_thread = threading.Thread(target=self._download_thread, daemon=True)
       self.download_thread.start()
