@@ -54,6 +54,8 @@ function launch {
           mv $DIR /data/safe_staging/old_openpilot
           mv "${STAGING_ROOT}/finalized" $DIR
           cd $DIR
+          # Ensure PWD env matches the actual working directory after moving directories
+          export PWD="$DIR"
 
           echo "Restarting launch script ${LAUNCHER_LOCATION}"
           unset AGNOS_VERSION
@@ -66,9 +68,10 @@ function launch {
     fi
   fi
 
-  # handle pythonpath
-  ln -sfn $(pwd) /data/pythonpath
-  export PYTHONPATH="$PWD"
+  # handle pythonpath - ensure PWD matches DIR and use DIR explicitly
+  ln -sfn "$DIR" /data/pythonpath
+  export PWD="$DIR"
+  export PYTHONPATH="$DIR"
 
   # hardware specific init
   if [ -f /AGNOS ]; then
