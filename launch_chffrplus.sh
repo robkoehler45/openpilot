@@ -49,13 +49,16 @@ function launch {
       if [ -f "${STAGING_ROOT}/finalized/.overlay_consistent" ]; then
         if [ ! -d /data/safe_staging/old_openpilot ]; then
           echo "Valid overlay update found, installing"
-          LAUNCHER_LOCATION="${BASH_SOURCE[0]}"
 
           mv $DIR /data/safe_staging/old_openpilot
           mv "${STAGING_ROOT}/finalized" $DIR
           cd $DIR
           # Ensure PWD env matches the actual working directory after moving directories
           export PWD="$DIR"
+
+          # Recompute DIR and LAUNCHER_LOCATION after swap so they point to NEW location
+          DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+          LAUNCHER_LOCATION="${DIR}/$(basename ${BASH_SOURCE[0]})"
 
           echo "Restarting launch script ${LAUNCHER_LOCATION}"
           unset AGNOS_VERSION
