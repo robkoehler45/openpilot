@@ -42,6 +42,7 @@ class UserRequest:
   NONE = 0
   CHECK = 1
   FETCH = 2
+  FORCE_FETCH = 3
 
 class WaitTimeHelper:
   def __init__(self):
@@ -49,6 +50,7 @@ class WaitTimeHelper:
     self.user_request = UserRequest.NONE
     signal.signal(signal.SIGHUP, self.update_now)
     signal.signal(signal.SIGUSR1, self.check_now)
+    signal.signal(signal.SIGUSR2, self.force_update_now)
 
   def update_now(self, signum: int, frame) -> None:
     cloudlog.info("caught SIGHUP, attempting to downloading update")
@@ -60,12 +62,17 @@ class WaitTimeHelper:
     self.user_request = UserRequest.CHECK
     self.ready_event.set()
 
+  def force_update_now(self, signum: int, frame) -> None:
+    cloudlog.info("caught SIGUSR2, attempting forced update download")
+    self.user_request = UserRequest.FORCE_FETCH
+    self.ready_event.set()
+
   def sleep(self, t: float) -> None:
     self.ready_event.wait(timeout=t)
 
 def write_time_to_param(params, param) -> None:
   t = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
-  params.put(param, t)
+  params.put(param, t, block=True)
 
 def run(cmd: list[str], cwd: str | None = None) -> str:
   return subprocess.check_output(cmd, cwd=cwd, stderr=subprocess.STDOUT, encoding='utf8')
@@ -138,7 +145,7 @@ def init_overlay() -> None:
   cloudlog.info("preparing new safe staging area")
 
   params = Params()
-  params.put_bool("UpdateAvailable", False)
+  params.put_bool("UpdateAvailable", False, block=True)
   set_consistent_flag(False)
   dismount_overlay()
   run(["sudo", "rm", "-rf", STAGING_ROOT])
@@ -169,7 +176,7 @@ def init_overlay() -> None:
   run(["sudo", "chmod", "755", os.path.join(OVERLAY_METADATA, "work")])
 
   git_diff = run(["git", "diff", "--submodule=diff"], OVERLAY_MERGED)
-  params.put("GitDiff", git_diff)
+  params.put("GitDiff", git_diff, block=True)
   cloudlog.info(f"git diff output:\n{git_diff}")
 
 
@@ -260,19 +267,19 @@ class Updater:
     return run(["git", "rev-parse", "HEAD"], path).rstrip()
 
   def set_params(self, update_success: bool, failed_count: int, exception: str | None) -> None:
-    self.params.put("UpdateFailedCount", failed_count)
-    self.params.put("UpdaterTargetBranch", self.target_branch)
+    self.params.put("UpdateFailedCount", failed_count, block=True)
+    self.params.put("UpdaterTargetBranch", self.target_branch, block=True)
 
-    self.params.put_bool("UpdaterFetchAvailable", self.update_available)
+    self.params.put_bool("UpdaterFetchAvailable", self.update_available, block=True)
     if len(self.branches):
-      self.params.put("UpdaterAvailableBranches", ','.join(self.branches.keys()))
+      self.params.put("UpdaterAvailableBranches", ','.join(self.branches.keys()), block=True)
 
     last_uptime_onroad = self.params.get("UptimeOnroad", return_default=True)
     last_route_count = self.params.get("RouteCount", return_default=True)
     if update_success:
-      self.params.put("LastUpdateTime", datetime.datetime.now(datetime.UTC).replace(tzinfo=None))
-      self.params.put("LastUpdateUptimeOnroad", last_uptime_onroad)
-      self.params.put("LastUpdateRouteCount", last_route_count)
+      self.params.put("LastUpdateTime", datetime.datetime.now(datetime.UTC).replace(tzinfo=None), block=True)
+      self.params.put("LastUpdateUptimeOnroad", last_uptime_onroad, block=True)
+      self.params.put("LastUpdateRouteCount", last_route_count, block=True)
     else:
       last_uptime_onroad = self.params.get("LastUpdateUptimeOnroad", return_default=True)
       last_route_count = self.params.get("LastUpdateRouteCount", return_default=True)
@@ -280,7 +287,7 @@ class Updater:
     if exception is None:
       self.params.remove("LastUpdateException")
     else:
-      self.params.put("LastUpdateException", exception)
+      self.params.put("LastUpdateException", exception, block=True)
 
     # Write out current and new version info
     def get_description(basedir: str) -> str:
@@ -303,11 +310,11 @@ class Updater:
       except Exception:
         cloudlog.exception("updater.get_description")
       return f"{version} / {branch} / {commit} / {commit_date}"
-    self.params.put("UpdaterCurrentDescription", get_description(BASEDIR))
-    self.params.put("UpdaterCurrentReleaseNotes", parse_release_notes(BASEDIR))
-    self.params.put("UpdaterNewDescription", get_description(FINALIZED))
-    self.params.put("UpdaterNewReleaseNotes", parse_release_notes(FINALIZED))
-    self.params.put_bool("UpdateAvailable", self.update_ready)
+    self.params.put("UpdaterCurrentDescription", get_description(BASEDIR), block=True)
+    self.params.put("UpdaterCurrentReleaseNotes", parse_release_notes(BASEDIR), block=True)
+    self.params.put("UpdaterNewDescription", get_description(FINALIZED), block=True)
+    self.params.put("UpdaterNewReleaseNotes", parse_release_notes(FINALIZED), block=True)
+    self.params.put_bool("UpdateAvailable", self.update_ready, block=True)
 
     # Handle user prompt
     for alert in ("Offroad_UpdateFailed", "Offroad_ConnectivityNeeded", "Offroad_ConnectivityNeededPrompt"):
@@ -359,20 +366,24 @@ class Updater:
     else:
       cloudlog.info(f"up to date on {cur_branch} ({str(cur_commit)[:7]})")
 
-  def fetch_update(self) -> None:
+  def fetch_update(self, force: bool = False) -> None:
     cloudlog.info("attempting git fetch inside staging overlay")
 
-    self.params.put("UpdaterState", "downloading...")
+    self.params.put("UpdaterState", "downloading...", block=True)
 
     # TODO: cleanly interrupt this and invalidate old update
     set_consistent_flag(False)
-    self.params.put_bool("UpdateAvailable", False)
+    self.params.put_bool("UpdateAvailable", False, block=True)
 
     setup_git_options(OVERLAY_MERGED)
 
     run(["git", "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], OVERLAY_MERGED)
 
     branch = self.target_branch
+    if force:
+      self.fetch_update_force(branch)
+      return
+
     git_fetch_output = run(["git", "fetch", "origin", branch], OVERLAY_MERGED)
     cloudlog.info("git fetch success: %s", git_fetch_output)
 
@@ -394,9 +405,53 @@ class Updater:
       handle_agnos_update()
 
     # Create the finalized, ready-to-swap update
-    self.params.put("UpdaterState", "finalizing update...")
+    self.params.put("UpdaterState", "finalizing update...", block=True)
     finalize_update()
     cloudlog.info("finalize success!")
+
+  def fetch_update_force(self, branch: str) -> None:
+    git_fetch_output = run(["git", "-c", "fetch.recurseSubmodules=false", "fetch", "--no-recurse-submodules", "--prune", "origin", branch], OVERLAY_MERGED)
+    cloudlog.info("force download git fetch success: %s", git_fetch_output)
+
+    def run_cmds(label: str, cmds: list[list[str]]) -> list[str]:
+      results = [run(cmd, OVERLAY_MERGED) for cmd in cmds]
+      cloudlog.info("%s success: %s", label, '\n'.join(results))
+      return results
+
+    cloudlog.info("force download: tearing down current submodule state before checkout")
+    pre_checkout_cmds = [
+      ["git", "submodule", "sync", "--recursive"],
+      ["git", "submodule", "deinit", "--force", "--all"],
+      ["git", "clean", "-xdff"],
+    ]
+    run_cmds("force download pre-checkout", pre_checkout_cmds)
+
+    cloudlog.info("force download git reset in progress")
+    root_cmds = [
+      ["git", "checkout", "--force", "--no-recurse-submodules", "-B", branch, "FETCH_HEAD"],
+      ["git", "branch", "--set-upstream-to", f"origin/{branch}"],
+      ["git", "reset", "--hard"],
+      ["git", "clean", "-xdff"],
+    ]
+    run_cmds("force download git reset", root_cmds)
+
+    submodule_cmds = [
+      ["git", "submodule", "sync", "--recursive"],
+      ["git", "submodule", "update", "--init", "--force", "--recursive"],
+      ["git", "submodule", "foreach", "--recursive", "git", "reset", "--hard"],
+      ["git", "submodule", "foreach", "--recursive", "git", "clean", "-xdff"],
+      ["git", "submodule", "update", "--init", "--force", "--recursive"],
+    ]
+    run_cmds("force download submodules", submodule_cmds)
+
+    # TODO: show agnos download progress
+    if AGNOS:
+      handle_agnos_update()
+
+    # Create the finalized, ready-to-swap update
+    self.params.put("UpdaterState", "finalizing update...")
+    finalize_update()
+    cloudlog.info("force download finalize success!")
 
 
 def main() -> None:
@@ -423,7 +478,7 @@ def main() -> None:
 
     if not params.get("InstallDate"):
       t = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
-      params.put("InstallDate", t)
+      params.put("InstallDate", t, block=True)
 
     updater = Updater()
     update_failed_count = 0 # TODO: Load from param?
@@ -433,7 +488,7 @@ def main() -> None:
     set_consistent_flag(False)
 
     # set initial state
-    params.put("UpdaterState", "idle")
+    params.put("UpdaterState", "idle", block=True)
 
     # Run the update loop
     first_run = True
@@ -457,19 +512,19 @@ def main() -> None:
         update_failed_count += 1
 
         # check for update
-        params.put("UpdaterState", "checking...")
+        params.put("UpdaterState", "checking...", block=True)
         updater.check_for_update()
 
         # download update
         last_fetch = params.get("UpdaterLastFetchTime")
         timed_out = last_fetch is None or (datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - last_fetch > datetime.timedelta(days=3))
-        user_requested_fetch = wait_helper.user_request == UserRequest.FETCH
+        user_requested_fetch = wait_helper.user_request in (UserRequest.FETCH, UserRequest.FORCE_FETCH)
         if params.get_bool("NetworkMetered") and not timed_out and not user_requested_fetch:
           cloudlog.info("skipping fetch, connection metered")
         elif wait_helper.user_request == UserRequest.CHECK:
           cloudlog.info("skipping fetch, only checking")
         else:
-          updater.fetch_update()
+          updater.fetch_update(force=(wait_helper.user_request == UserRequest.FORCE_FETCH))
           write_time_to_param(params, "UpdaterLastFetchTime")
         update_failed_count = 0
       except subprocess.CalledProcessError as e:
@@ -487,7 +542,7 @@ def main() -> None:
         OVERLAY_INIT.unlink(missing_ok=True)
 
       try:
-        params.put("UpdaterState", "idle")
+        params.put("UpdaterState", "idle", block=True)
         update_successful = (update_failed_count == 0)
         updater.set_params(update_successful, update_failed_count, exception)
       except Exception:

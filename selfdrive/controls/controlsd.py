@@ -11,11 +11,13 @@ from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
+from openpilot.selfdrive.controls.lib.curvatured import CurvatureDController
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
+from openpilot.selfdrive.controls.lib.latcontrol_curvature import LatControlCurvature
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
@@ -45,18 +47,20 @@ class Controls(ControlsExt):
 
     self.CI = interfaces[self.CP.carFingerprint](self.CP, self.CP_SP)
 
-    self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
+    self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'liveCurvatureParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay'] + self.sm_services_ext,
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance'] + self.sm_services_ext,
                                   poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
 
     self.steer_limited_by_safety = False
     self.curvature = 0.0
     self.roll_compensation = 0.0
+    self.model_desired_curvature = 0.0
     self.desired_curvature = 0.0
 
     self.enable_curvature_controller = self.params.get_bool("EnableCurvatureController")
+    self.enable_curvatured = self.params.get_bool("EnableCurvatureD")
     self.enable_speed_limit_control = self.params.get_bool("EnableSpeedLimitControl")
     self.enable_speed_limit_predicative = self.params.get_bool("EnableSpeedLimitPredicative")
     self.enable_pred_react_to_speed_limits = self.params.get_bool("EnableSLPredReactToSL")
@@ -72,10 +76,12 @@ class Controls(ControlsExt):
 
     self.LoC = LongControl(self.CP, self.CP_SP)
     self.VM = VehicleModel(self.CP)
+    self.curvatured = CurvatureDController() if self.CP.steerControlType == car.CarParams.SteerControlType.curvatureDEPRECATED else None
     self.LaC: LatControl
-    if (self.CP.steerControlType == car.CarParams.SteerControlType.angle or
-        self.CP.steerControlType == car.CarParams.SteerControlType.curvatureDEPRECATED):
+    if (self.CP.steerControlType == car.CarParams.SteerControlType.angle):
       self.LaC = LatControlAngle(self.CP, self.CP_SP, self.CI, DT_CTRL)
+    elif (self.CP.steerControlType == car.CarParams.SteerControlType.curvatureDEPRECATED):
+      self.LaC = LatControlCurvature(self.CP, self.CP_SP, self.CI, DT_CTRL)
     elif self.CP.lateralTuning.which() == 'pid':
       self.LaC = LatControlPID(self.CP, self.CP_SP, self.CI, DT_CTRL)
     elif self.CP.lateralTuning.which() == 'torque':
@@ -95,6 +101,8 @@ class Controls(ControlsExt):
     if self.param_counter >= 100:
       self.param_counter = 0
       self.enable_curvature_controller = self.params.get_bool("EnableCurvatureController")
+      if self.CP.steerControlType == car.CarParams.SteerControlType.curvatureDEPRECATED:
+        self.LaC.set_pid_enabled(self.enable_curvature_controller)
       self.enable_smooth_steer = self.params.get_bool("EnableSmoothSteer")
       self.enable_speed_limit_control = self.params.get_bool("EnableSpeedLimitControl")
       self.enable_speed_limit_predicative = self.params.get_bool("EnableSpeedLimitPredicative")
@@ -129,6 +137,13 @@ class Controls(ControlsExt):
       self.LaC.extension.update_model_v2(self.sm['modelV2'])
 
       self.LaC.extension.update_lateral_lag(self.lat_delay)
+
+    if self.CP.steerControlType == car.CarParams.SteerControlType.curvatureDEPRECATED:
+      curvature_params = self.sm['liveCurvatureParameters']
+      if self.sm.all_checks(['liveCurvatureParameters']) and curvature_params.useParams:
+        self.curvatured.update_live_params(curvature_params)
+      else:
+        self.curvatured.reset()
 
     long_plan = self.sm['longitudinalPlan']
     model_v2 = self.sm['modelV2']
@@ -172,17 +187,25 @@ class Controls(ControlsExt):
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
+    self.model_desired_curvature = float(model_v2.action.desiredCurvature)
     if self.enable_smooth_steer:
       new_desired_curvature = self.smooth_steer.update(new_desired_curvature)
+    if self.CP.steerControlType == car.CarParams.SteerControlType.curvatureDEPRECATED:
+      # CurvatureD correction routed as additive term on the controller output (not setpoint shift)
+      if CC.latActive and self.enable_curvatured and self.sm.all_checks(['liveCurvatureParameters']):
+        correction = self.curvatured.get_correction(self.desired_curvature, CS.vEgo)
+      else:
+        correction = 0.0
+      self.LaC.set_curvature_correction(correction)
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
-    actuators.curvature = self.desired_curvature
-    steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
+    steer, steeringAngleDeg, output_curvature, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
                                                        self.calibrated_pose, curvature_limited, lat_delay)
     actuators.torque = float(steer)
     actuators.steeringAngleDeg = float(steeringAngleDeg)
+    actuators.curvature = float(output_curvature)
     # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:
       attr = getattr(actuators, p)
@@ -239,8 +262,7 @@ class Controls(ControlsExt):
 
     if self.get_lat_active(self.sm):
       CO = self.sm['carOutput']
-      if (self.CP.steerControlType == car.CarParams.SteerControlType.angle or
-          self.CP.steerControlType == car.CarParams.SteerControlType.curvatureDEPRECATED):
+      if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
         self.steer_limited_by_safety = abs(CC.actuators.steeringAngleDeg - CO.actuatorsOutput.steeringAngleDeg) > \
                                               STEER_ANGLE_SATURATION_THRESHOLD
       else:
@@ -257,18 +279,20 @@ class Controls(ControlsExt):
     cs.curvature = self.curvature
     cs.longitudinalPlanMonoTime = self.sm.logMonoTime['longitudinalPlan']
     cs.lateralPlanMonoTime = self.sm.logMonoTime['modelV2']
+    cs.modelDesiredCurvature = self.model_desired_curvature
     cs.desiredCurvature = self.desired_curvature
     cs.longControlState = self.LoC.long_control_state
     cs.upAccelCmd = float(self.LoC.pid.p)
     cs.uiAccelCmd = float(self.LoC.pid.i)
     cs.ufAccelCmd = float(self.LoC.pid.f)
-    cs.forceDecel = bool((self.sm['driverMonitoringState'].awarenessStatus < 0.) or
+    cs.forceDecel = bool((self.sm['driverMonitoringState'].alertLevel == log.DriverMonitoringState.AlertLevel.three) or
                          (self.sm['selfdriveState'].state == State.softDisabling))
 
     lat_tuning = self.CP.lateralTuning.which()
-    if (self.CP.steerControlType == car.CarParams.SteerControlType.angle or
-        self.CP.steerControlType == car.CarParams.SteerControlType.curvatureDEPRECATED):
+    if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
       cs.lateralControlState.angleState = lac_log
+    elif self.CP.steerControlType == car.CarParams.SteerControlType.curvatureDEPRECATED:
+      cs.lateralControlState.curvatureStateDEPRECATED = lac_log
     elif lat_tuning == 'pid':
       cs.lateralControlState.pidState = lac_log
     elif lat_tuning == 'torque':

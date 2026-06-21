@@ -1,6 +1,7 @@
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
+from openpilot.selfdrive.ui.mici.onroad.dynamic_steering_learner_graph import DynamicSteeringLearnerGraphMici
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.mici.onroad.long_accel_bar import LongitudinalAccelBar
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
@@ -119,6 +120,7 @@ class HudRenderer(Widget):
     self._turn_intent = TurnIntent()
     self._torque_bar = TorqueBar()
     self._long_accel_bar = LongitudinalAccelBar()
+    self._dynamic_steering_learner_graph = DynamicSteeringLearnerGraphMici()
 
     self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/wheel.png', 50, 50)
     self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/wheel_critical.png', 50, 50)
@@ -177,6 +179,7 @@ class HudRenderer(Widget):
     if ui_state.enable_accel_bar:
       self._long_accel_bar.render(rect)
 
+    self._dynamic_steering_learner_graph.render(rect)
     self._torque_bar.render(rect)
 
     if self.is_cruise_set:
@@ -240,7 +243,7 @@ class HudRenderer(Widget):
 
     # draw drop shadow
     circle_radius = 162 // 2
-    rl.draw_circle_gradient(int(x + circle_radius), int(y + circle_radius), circle_radius,
+    rl.draw_circle_gradient(rl.Vector2(x + circle_radius, y + circle_radius), circle_radius,
                             rl.Color(0, 0, 0, int(255 / 2 * alpha)), rl.BLANK)
 
     set_speed_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))

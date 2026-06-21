@@ -34,7 +34,7 @@ def ublox_available() -> bool:
 def ublox(started: bool, params: Params, CP: car.CarParams) -> bool:
   use_ublox = ublox_available()
   if use_ublox != params.get_bool("UbloxAvailable"):
-    params.put_bool("UbloxAvailable", use_ublox)
+    params.put_bool("UbloxAvailable", use_ublox, block=True)
   return started and use_ublox
 
 def joystick(started: bool, params: Params, CP: car.CarParams) -> bool:
@@ -63,6 +63,9 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 
 def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started
+
+def curvatured_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return only_onroad(started, params, CP) and params.get_bool("EnableCurvatureD")
 
 def use_github_runner(started, params, CP: car.CarParams) -> bool:
   return not PC and params.get_bool("EnableGithubRunner") and (
@@ -131,6 +134,7 @@ procs = [
   NativeProcess("_pandad", "selfdrive/pandad", ["./pandad"], always_run, enabled=False),
   PythonProcess("calibrationd", "selfdrive.locationd.calibrationd", only_onroad),
   PythonProcess("torqued", "selfdrive.locationd.torqued", only_onroad),
+  PythonProcess("curvatured", "selfdrive.locationd.curvatured", curvatured_enabled),
   PythonProcess("controlsd", "selfdrive.controls.controlsd", and_(not_joystick, iscar)),
   PythonProcess("joystickd", "tools.joystick.joystickd", or_(joystick, notcar)),
   PythonProcess("selfdrived", "selfdrive.selfdrived.selfdrived", only_onroad),
@@ -148,6 +152,7 @@ procs = [
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
+  PythonProcess("modem", "system.hardware.tici.modem", always_run, enabled=TICI),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "system.updated.updated", only_offroad, enabled=not PC),
   PythonProcess("uploader", "system.loggerd.uploader", uploader_ready),
