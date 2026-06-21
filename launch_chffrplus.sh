@@ -76,6 +76,14 @@ function launch {
   export PWD="$DIR"
   export PYTHONPATH="$DIR"
 
+  if [ ! -f "$DIR/opendbc/safety/safety.h" ]; then
+    echo "opendbc safety headers missing, repairing opendbc submodule"
+    cd "$DIR"
+    ln -sfn opendbc_repo/opendbc opendbc
+    git submodule sync --recursive opendbc_repo
+    git submodule update --init --recursive opendbc_repo
+  fi
+
   # hardware specific init
   if [ -f /AGNOS ]; then
     agnos_init
