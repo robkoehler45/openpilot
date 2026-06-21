@@ -356,7 +356,6 @@ class Setup(Widget):
       req = urllib.request.Request(self.download_url, headers=headers)
 
       with open(tmpfile, 'wb') as f, urllib.request.urlopen(req, timeout=30) as response:
-        content_type = response.headers.get('content-type', '')
         total_size = int(response.headers.get('content-length', 0))
         downloaded = 0
         block_size = 8192
@@ -378,10 +377,7 @@ class Setup(Widget):
         is_elf = header == b'\x7fELF'
 
       if not is_elf:
-        if content_type.startswith('text/') or content_type.startswith('application/json'):
-          self.download_failed(self.download_url, f"Downloaded content is not an ELF binary; got Content-Type={content_type}.")
-        else:
-          self.download_failed(self.download_url, "No custom software found at this URL.")
+        self.download_failed(self.download_url, "No custom software found at this URL.")
         return
 
       # AGNOS might try to execute the installer before this process exits.
@@ -399,14 +395,9 @@ class Setup(Widget):
     except urllib.error.HTTPError as e:
       if e.code == 409:
         error_msg = e.read().decode("utf-8")
-      else:
-        error_msg = f"HTTP error {e.code}: {e.reason}"
-      self.download_failed(self.download_url, error_msg)
-    except urllib.error.URLError as e:
-      error_msg = f"Network error: {e.reason}"
-      self.download_failed(self.download_url, error_msg)
-    except Exception as e:
-      error_msg = f"Ensure the entered URL is valid, the device can access it, and the response is a binary installer. ({e})"
+        self.download_failed(self.download_url, error_msg)
+    except Exception:
+      error_msg = "Ensure the entered URL is valid, and the device's internet connection is good."
       self.download_failed(self.download_url, error_msg)
 
   def download_failed(self, url: str, reason: str):
